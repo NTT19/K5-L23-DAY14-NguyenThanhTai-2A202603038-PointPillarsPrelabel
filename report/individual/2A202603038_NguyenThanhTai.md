@@ -15,18 +15,19 @@ Ghi **trước** khi chạy `scripts/pp_sweep.py`, rồi commit và push ngay (l
 | Cấu hình | Xóa | Thêm | Sửa | Chi phí |
 |---|---:|---:|---:|---:|
 | Gốc | 45 | 7 | 4 | 22.5 |
-| `best_config.json` | | | | |
+| `best_config.json` | 20 | 9 | 4 | 17.0 |
 
-- Tham số đã đổi trong `best_config.json`: ...
-- Kết quả leave-one-out (dán các dòng `scripts/pp_sweep.py` in ra): ...
-- Cấu hình có ổn định trên từng frame không? Vì sao tôi vẫn chọn (hoặc không chọn) nó: ...
+- Tham số thay đổi trong `best_config.json`: `score_thr` tăng từ 0.1 lên 0.4; `min_points` là 0, giữ mức gốc.
+- Kết quả leave-one-out: bỏ `s02f37`, cấu hình được chọn là `score_thr=0.3, min_points=5`, chi phí 7.2 (tốt nhất riêng frame là 6.1); bỏ `s04f12`, chọn `score_thr=0.4, min_points=0`, chi phí 2.9 (tốt nhất 2.9); bỏ `s05f12`, chọn `score_thr=0.4, min_points=0`, chi phí 8.0 (tốt nhất 7.0).
+- Độ ổn định và lựa chọn: cấu hình chưa ổn định hoàn toàn giữa các fold vì một fold chọn `score_thr=0.3, min_points=5`, còn hai fold chọn `0.4, 0`. Chi phí leave-one-out cao hơn mức tốt nhất riêng từng frame từ 0 đến 1.1. Tôi dùng `best_config.json` làm điểm xuất phát cho tập B vì cấu hình `score_thr=0.4, min_points=0` đạt chi phí tổng thấp nhất trong sweep (17.0); kết quả chỉ dựa trên 3 frame tập A nên vẫn có nguy cơ overfit.
 
 ## 3. Trước/sau (bước 8)
 
-![so sánh](../../d14_038/compare/<frame>.jpg)
+![so sánh](../../d14_038/compare/s02f37.jpg)
 
-- `scripts/pp_compare.py` báo giảm (hoặc tăng) ...% công sửa trên tập A.
-- Dự đoán ở mục 1 đúng hay sai? Giải thích bằng số box xóa/thêm/sửa: ...
+- `scripts/pp_compare.py` báo giảm 24% công sửa trên tập A (tổng chi phí từ 22.5 xuống 17.0).
+- Đối chiếu số box: cấu hình gốc xóa 45, thêm 7, sửa 4; cấu hình đã tune xóa 20, thêm 9, sửa 4. Sweep chọn `score_thr=0.4`, `min_points=0`, còn mục 1 dự đoán `score_thr=0.2` hoặc `0.3`.
+- Kết luận dự đoán ở mục 1 là đúng và lý do ở hai frame đầu, ảnh tuned có ít box đỏ hơn rõ rệt, trong khi số box xanh dương chỉ tăng nhẹ ở s02f37. Ở s05f12, số box đỏ không giảm nhưng box xanh dương tăng, nên chi phí frame này cao hơn 1 điểm. Tổng thể, tuned giảm 25 box phải xóa, tăng 2 box phải thêm, số box sửa giữ nguyên; chi phí giảm từ 22.5 xuống 17.0. sweep chọn score_thr=0.4, cao hơn mức 0.2–0.3. Điều này cho thấy lọc mạnh hơn có lợi ở hai frame nhưng cũng có thể làm sót vật thể ở frame khác
 
 ## 4. Tập B
 
@@ -34,10 +35,12 @@ Số đo từ `scripts/pp_prelabel.py --frames d14_038/frames_B.txt --config d14
 
 | Xóa | Thêm | Sửa | Chi phí |
 |---:|---:|---:|---:|
-| | | | |
+| 102 | 11 | 1 | 42.1 |
 
-- Loại box tốn công sửa nhất ở tập B: ...
+- Loại box tốn công sửa nhất ở tập B: Cyclist
 
 ## 5. Giới hạn
 
-- Nêu ít nhất 2 giới hạn (ví dụ: chỉ 3 frame tune; model KITTI không có Truck/Bus; chi phí là công thức, chưa phải thời gian sửa thật): ...
+- Sweep chỉ tune trên 3 frame tập A nên cấu hình tốt nhất có thể overfit các frame này và chưa chắc tổng quát cho các sequence khác.
+- PointPillars được huấn luyện trước trên KITTI, khác miền dữ liệu VF và không có lớp Truck/Bus gốc; dự đoán các loại xe này cần được kiểm tra thủ công.
+- Chi phí sửa là công thức có trọng số (0.3·xóa + 1.0·thêm + 0.5·sửa), chỉ tính đối tượng trong phạm vi 50 m; đây không phải thời gian gán nhãn thực tế.
