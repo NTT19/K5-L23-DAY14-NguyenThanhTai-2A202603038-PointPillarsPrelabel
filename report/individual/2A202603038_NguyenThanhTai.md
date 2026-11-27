@@ -7,8 +7,8 @@
 
 Ghi **trước** khi chạy `scripts/pp_sweep.py`, rồi commit và push ngay (lịch sử commit là bằng chứng thời điểm viết). Không sửa phần này sau khi có kết quả.
 
-- Tham số tôi nghĩ giảm công sửa nhiều nhất: ...
-- Vì sao (nhìn ảnh BEV tập A: box thừa nhiều hay box sót nhiều?): ...
+- Tham số tôi nghĩ giảm công sửa nhiều nhất: score_thr, thử tăng score_thr vừa phải từ 0.1 lên 0.2 hoặc 0.3. Bởi vì baseline có 45 box phải xóa và 7 box phải thêm, nên việc lọc bớt một số dự đoán yếu có thể giảm phần box thừa
+- Vì sao (nhìn ảnh BEV tập A: box thừa nhiều hay box sót nhiều?): vì box thừa có vẻ nhiều hơn box sót. Số đo A là xóa 45, thêm 7; ảnh BEV cũng có nhiều box dự đoán chen quanh các cụm xe và ven đường. Vì vậy, có cơ sở để thử lọc bớt dự đoán yếu. Lọc quá mạnh vẫn có thể làm mất vật thể thật, nhất là vật thể nhỏ hoặc thưa điểm.
 
 ## 2. Tập A: sửa tay và tune
 
