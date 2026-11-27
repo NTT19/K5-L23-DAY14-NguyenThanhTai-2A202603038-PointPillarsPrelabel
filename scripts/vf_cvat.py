@@ -7,6 +7,11 @@ Commands::
     python scripts/vf_cvat.py prelabel --student <ID> --task A --data <Data-VF> --boxes d14_<ID>/pred_A.json --host <URL> --user <name> [--org SLUG]
     python scripts/vf_cvat.py reference --student <ID> --task A --host <URL> --user <name>  # đọc box đã sửa -> d14_<ID>/ref_A.json
 
+    # Import any converted VF point clouds as a CVAT 3-D task
+    python scripts/vf_cvat.py import-vf --data <Data-VF> --task-name KITTI-VF \
+        --frames demo/frames_lec.txt --boxes out/lec.json \
+        --host http://localhost:8080 --user <name>
+
     python scripts/vf_cvat.py day13 --student <ID> --data <data-VF> --host <URL> --user <name> [--org SLUG] [--dry-run] [--replace]
     python scripts/vf_cvat.py report d13 --student <ID> --host <URL> --user <name> [--org SLUG] --out ./nop
     python scripts/vf_cvat.py preview d13 --student <ID> --data <data-VF> --table nop/D13-<ID>-bangA.csv --out ./xem
@@ -484,6 +489,129 @@ def cmd_reference(args) -> int:
     return 0
 
 
+def _safe_task_name(value: str) -> str:
+    name = value.strip()
+    if not name or len(name) > 128 or any(char in name for char in "\\/\r\n\t"):
+        raise SystemExit("--task-name phải là tên CVAT không rỗng, tối đa 128 ký tự và không chứa \\, / hoặc xuống dòng.")
+    return name
+
+
+def _import_frame_names(data: Path, frames_arg: str | None, max_frames: int | None) -> list[str]:
+    from scripts import vf_d14
+
+    if frames_arg:
+        names = vf_d14.read_frame_list(frames_arg)
+    else:
+        names = [
+            vf.frame_name(seq, index)
+            for seq, stamps in sorted(vf.list_sequences(data).items())
+            for index in range(len(stamps))
+        ]
+    if max_frames is not None:
+        if max_frames < 1:
+            raise SystemExit("--max-frames phải lớn hơn 0.")
+        names = names[:max_frames]
+    if not names:
+        raise SystemExit("Không có frame để import.")
+    if len(set(names)) != len(names):
+        raise SystemExit("Danh sách frame chứa mục trùng nhau.")
+    return names
+
+
+def _load_prelabel_boxes(path: str | None, names: list[str]) -> dict[str, list[dict]]:
+    if not path:
+        return {}
+    try:
+        document = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"--boxes {path}: không đọc được JSON ({exc}).") from exc
+    if not isinstance(document, dict) or not isinstance(document.get("frames"), dict):
+        raise SystemExit(f"--boxes {path}: cần JSON có khóa frames là object.")
+    frames = document["frames"]
+    missing = [name for name in names if name not in frames]
+    if missing:
+        raise SystemExit(f"--boxes {path} thiếu frame {', '.join(missing)}.")
+    for name in names:
+        if not isinstance(frames[name], list) or any(not isinstance(box, dict) for box in frames[name]):
+            raise SystemExit(f"--boxes {path}: frames.{name} phải là danh sách box object.")
+    return {name: frames[name] for name in names}
+
+
+def cmd_import_vf(args) -> int:
+    """Create a CVAT 3-D task from VF point clouds, optionally with pre-label cuboids."""
+    data = Path(args.data)
+    name = _safe_task_name(args.task_name)
+    names = _import_frame_names(data, args.frames, args.max_frames)
+    from scripts import vf_d14
+
+    rows = vf_d14.frame_rows(data, names)
+    boxes = _load_prelabel_boxes(args.boxes, names)
+    box_count = sum(len(items) for items in boxes.values())
+    suffix = f", {box_count} cuboid pre-label" if args.boxes else ", point-cloud only"
+    print(f"Task: {name} ({len(rows)} frame{suffix})")
+    client = None
+    existing = []
+    if not args.dry_run:
+        if not (args.host and args.user):
+            raise SystemExit("Cần --host và --user (hoặc dùng --dry-run).")
+        client = connect(args.host, args.user, args.org)
+        existing = find_tasks(client, name)
+        if existing and not args.replace:
+            if len(existing) > 1:
+                ids = ", ".join(str(task.id) for task in existing)
+                raise SystemExit(f"Có nhiều task tên {name} (ID: {ids}). Kiểm trên CVAT trước khi chạy lại.")
+            task = existing[0]
+            if args.boxes:
+                if not task.get_jobs():
+                    raise SystemExit(f"Task {name} chưa có job; chờ CVAT xử lý rồi chạy lại.")
+                actual = [Path(frame.name).stem for frame in task.get_meta().frames]
+                if actual != sorted(names):
+                    raise SystemExit(f"Task {name} không khớp danh sách frame hiện tại. Dùng --replace nếu task đang rỗng.")
+                annotations = task.get_annotations()
+                if getattr(annotations, "shapes", None):
+                    raise SystemExit(f"Task {name} đã có cuboid; không ghi đè. Dùng --replace chỉ khi muốn tạo lại task.")
+                upload_prelabels(task, boxes)
+                print(f"Đã bổ sung {box_count} cuboid vào task cũ: {args.host.rstrip('/')}/tasks/{task.id}")
+                return 0
+            print(f"Đã có task {name}: {args.host.rstrip('/')}/tasks/{existing[0].id}")
+            print("Dùng --replace chỉ khi muốn xóa task cũ và tạo lại.")
+            return 0
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle = Path(args.bundle_out) if args.bundle_out else Path(tmp) / f"{name}.zip"
+        build_bundle(rows, bundle)
+        print(f"Đã đóng gói {bundle.stat().st_size / 1e6:.1f} MB.")
+        if args.dry_run:
+            print("--dry-run: không kết nối CVAT.")
+            return 0
+        from cvat_sdk.core.proxies.tasks import ResourceType
+
+        for task in existing:
+            task.remove()
+        spec = {
+            "name": name,
+            "segment_size": len(rows),
+            "labels": [
+                {
+                    "name": label,
+                    "type": "cuboid",
+                    "color": vf.LABEL_COLORS[label],
+                    **({"attributes": _attr_specs()} if args.boxes else {}),
+                }
+                for label in vf.CLASS_IDS
+            ],
+        }
+        task = client.tasks.create_from_data(
+            spec=spec,
+            resource_type=ResourceType.LOCAL,
+            resources=[str(bundle)],
+            data_params={"image_quality": 70, "sorting_method": "lexicographical"},
+        )
+        if args.boxes:
+            upload_prelabels(task, boxes)
+        print(f"Tạo xong: {args.host.rstrip('/')}/tasks/{task.id}")
+    return 0
+
+
 def main(argv=None) -> int:
     vf.configure_utf8_stdio()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -549,6 +677,20 @@ def main(argv=None) -> int:
     ref.add_argument("--out")
     ref.add_argument("--scale-order", choices=["lwh", "wlh"], default="lwh")
     ref.set_defaults(func=cmd_reference)
+
+    imp = sub.add_parser("import-vf", help="đưa point-cloud VF và tùy chọn cuboid pre-label vào task CVAT 3D")
+    imp.add_argument("--data", required=True, help="thư mục data-VF, ví dụ output của kitti_to_vf.py")
+    imp.add_argument("--task-name", required=True, help="tên task CVAT mới")
+    imp.add_argument("--frames", help="file frame hoặc chuỗi s01f00,s01f01; mặc định import tất cả")
+    imp.add_argument("--boxes", help="JSON pre-label từ scripts/pp_prelabel.py --out")
+    imp.add_argument("--max-frames", type=int, help="giới hạn số frame đầu tiên")
+    imp.add_argument("--host")
+    imp.add_argument("--user")
+    imp.add_argument("--org")
+    imp.add_argument("--bundle-out", help="giữ file zip CVAT tại đường dẫn này")
+    imp.add_argument("--dry-run", action="store_true", help="chỉ đóng gói, không kết nối CVAT")
+    imp.add_argument("--replace", action="store_true", help="xóa task cùng tên rồi tạo lại")
+    imp.set_defaults(func=cmd_import_vf)
 
     args = parser.parse_args(argv)
     return args.func(args)

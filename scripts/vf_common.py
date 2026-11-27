@@ -34,7 +34,10 @@ LABEL_COLORS = {
     "Pedestrian": "#2979ff",
 }
 CAMERAS = ("cam01", "cam03", "cam05", "cam06", "cam07", "cam08", "cam09")
-FRAME_NAME = re.compile(r"^s(\d{2})f(\d{2})$")
+# The teaching data uses two digits (s02f07), while KITTI conversion may
+# create more than 99 output sequences.  Keep the familiar minimum width but
+# allow additional digits so converted data can still be imported to CVAT.
+FRAME_NAME = re.compile(r"^s(\d{2,})f(\d{2,})$")
 DIST_BINS = ((0, 10), (10, 20), (20, 30), (30, 50))
 # Frames with fewer than 8 labelled objects within 50 m (counted once from the
 # coach-side labels). They are never assigned, so "frame 1 ≥ 8, others ≥ 5"
@@ -143,10 +146,18 @@ def read_bin(path: Path) -> array:
 
 
 def intensity_gray(value: float) -> int:
-    """Map raw intensity (0–~200, median ≈ 0) to 0–255 on a log scale."""
-    if value <= 0:
-        return 40
-    return int(40 + 215 * min(1.0, math.log1p(value) / math.log1p(50.0)))
+    """Map raw intensity to a brighter, higher-contrast grayscale value.
+
+    VF intensity is heavily concentrated near zero (the median is often about
+    0.02).  The old 40..255 linear-in-log mapping made most points almost the
+    same dark gray as CVAT's background.  A brighter floor plus a square-root
+    contrast curve keeps low-reflectance points visible while retaining bright
+    returns.  This changes only PCD display colour, not model input.
+    """
+    if not math.isfinite(value) or value <= 0:
+        return 96
+    contrast = math.sqrt(min(1.0, math.log1p(value) / math.log1p(10.0)))
+    return int(round(96 + 159 * contrast))
 
 
 def bin_to_pcd(path: Path) -> bytes:
